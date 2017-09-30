@@ -167,7 +167,11 @@ sum(testResult$Correct)/nrow(testResult)
 results<-testResult %>% 
   group_by(Predicted,result) %>% 
   summarise(Count=n())
+
+formattable(results)
 ```
+
+##Adding in team data
 
 ```{r team attributes}
 team_att<-tbl(dat,"Team_Attributes") %>%
@@ -177,6 +181,11 @@ team_att<-tbl(dat,"Team_Attributes") %>%
 team_att$date<-ymd(as.POSIXct(team_att$date))
 
 matches3<-select(matches1,id,date,home_team_api_id,away_team_api_id,result)
+```
+
+###Matching team attributes to matches
+
+```{r}
 
 matchTeamAttr<-function(matchID,matchData,team_att=team_att){
   dat1<-filter(matchData,id==matchID)
@@ -204,7 +213,7 @@ team_stats<-foreach(a = 1:nrow(matches3),.combine = "rbind",.errorhandling = "re
   matchTeamAttr(matches3[a,1],matches3,team_att)
 }
 
-match_team_stats<-matchData %>% 
+match_team_stats<-matches3 %>% 
   gather(key="Col",value="team_api_id",-id,-date,-result) 
 match_team_stats_1<-team_stats %>% 
   select(-date) %>% 
@@ -213,6 +222,29 @@ matchTeam<-data.frame(str_split_fixed(match_team_stats_1$Col,"_",2),stringsAsFac
 
 match_team_stats_1$Col<-matchTeam$X1
 match_team_stats_1$Column<-paste(match_team_stats_1$Col,match_team_stats_1$Column,sep="_")
+```
+
+
+##Predicting based on team stats
+
+```{r}
+team_stats_1<-match_team_stats_1 %>% 
+  mutate("Value"=ifelse(is.na(Value),0,Value)) %>% 
+  spread(key="Column",value="Value",fill=0) %>% 
+  mutate("result"=as.factor(result))
+
+numbers<-sample(nrow(team_stats_1),nrow(team_stats_1)*2/3)
+train_team_data<-team_stats_1[numbers,]
+
+train_team_minus<-select(train_team_data,-result)
+test_team_data<-team_stats_1[-numbers,]
+test_team_minus<-select(test_team_data,-result)
+
+teamModel<-randomForest(x = train_team_minus,xtest = test_team_minus,y=train_team_data$result,ytest=test_team_data$result)
+
+```
+
+```{r}
 
 #joining up with player data
 match_team_player_stats<-match_team_stats_1 %>% 
@@ -220,15 +252,6 @@ match_team_player_stats<-match_team_stats_1 %>%
   spread(key="Column",value="Value",fill=0) %>% 
   left_join(players_grouped_2)
 
-#forcing character strings to be vectors
-
-for(a in 1:ncol(match_team_player_stats)){
-  if(is.na(sum(as.numeric(match_team_player_stats[,a])))){
-    match_team_player_stats[,a]<-as.factor(match_team_player_stats[,a])
-  }else{
-    match_team_player_stats[,a]<-as.numeric(match_team_player_stats[,a])
-  }
-}
 ```
 
 We can then check this with a model, and see if out predictions have improved
