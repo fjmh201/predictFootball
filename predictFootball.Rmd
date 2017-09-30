@@ -10,12 +10,14 @@ library(plyr)
 library(dplyr)
 library(tidyr)
 library(stringr)
+library(formattable)
 library(lubridate)
 library(foreach)
 library(doParallel)
 library(randomForest)
 library(data.table)
 library(tictoc)
+library(caret)
 ```
 
 ##Initial look at data
@@ -25,18 +27,30 @@ dat<-src_sqlite("D:\\Downloads\\soccer\\database.sqlite",create = F)
 src_tbls(dat)
 ```
 
-```{r data_1}
+##Getting match data
+
+```{r data_matches,warning=FALSE}
 matches<-tbl(dat,"Match") %>%  data.frame()
 matches1<-filter(matches,is.na(home_player_X1)==F)
 matches1$date<-ymd(as.POSIXct(matches1$date))
-matches1$result<-ifelse(matches1$home_team_goal>matches1$away_team_goal,"Home",
-                       ifelse(matches1$home_team_goal<matches1$away_team_goal,"Away","Draw"))
+
+#calculating which team won 
+
+matches1$result<-ifelse(matches1$home_team_goal>matches1$away_team_goal,"Home",                              ifelse(matches1$home_team_goal<matches1$away_team_goal,"Away","Draw"))
 matches_player<-matches1 %>% 
   gather(key="Column",value="Value",-id) %>% 
   filter(grepl("player",Column)==T) %>% 
   filter(grepl("X|Y",Column)==F)
 colnames(matches_player)[3]<-"player_api_id"
 
+formattable(head(matches))
+```
+
+##Getting player data
+
+This code gets the list of players in each match.
+
+```{r players_matches_data}
 players_in_matches<-filter(tbl(dat,"Player"),player_api_id%in%matches_player$player_api_id) %>%data.frame () %>% select(-id)
 
 players_in_matches$player_api_id<-as.character(players_in_matches$player_api_id)
@@ -44,14 +58,25 @@ players_1<-left_join(matches_player,players_in_matches) %>% filter(is.na(player_
 
 players_1$match_date<-matches1[match(players_1$id,matches1$id),6]
 
+formattable(head(players_1))
+```
 
+This section gets the players stats, at the time of their match.
+
+```{r player_data}
 player_attributes<-filter(tbl(dat,"Player_Attributes"),player_api_id%in%players_1$player_api_id) %>% data.frame()
 player_attributes$date<-ymd(as.POSIXct(player_attributes$date))
 player_attributes$player_api_id<-as.character(player_attributes$player_api_id)
 player_attributes<-data.table(player_attributes)
 setkey(x = player_attributes,player_api_id)
+
+#transforming the data frame into a data table, to make is faster to filter the data
 players_1<-data.table(players_1)
 setkey(players_1,player_api_id)
+
+formattable(head(players_1))
+
+#This function matches the players attributes to the match data
 
 match_player_and_attributes<-function(player,players = players_1,attributes = player_attributes){
   dat1<-players[which(players$player_api_id==player),]
@@ -67,24 +92,26 @@ match_player_and_attributes<-function(player,players = players_1,attributes = pl
   return(dat4)
 }
 
-#eg1<-match_player_and_attributes(playersList[100,1])
 playersList<-unique(players_1$player_api_id)
 
+#using a foreach loop to apply the function over all players
 #creating parallel backend
 registerDoParallel(makeCluster(2))
 players_2<-foreach(a = 1:length(playersList),.combine = "rbind",.packages = c("data.table","dplyr"),.export = c("players_1","player_attributes"))%dopar%{
   match_player_and_attributes(playersList[a])
 }
+
+
 ```
 
 We can then calculate the average stats for each team
 
-```{r av per team}
+```{r av per team,warning=FALSE}
 homeOrAway<-data.frame(str_split_fixed(string = players_2$Column,pattern = "_",2),stringsAsFactors = F)
 
 players_2$homeOrAway<-homeOrAway$X1
 
-#will need to treat goalkeepers diferently
+
 players_grouped<-players_2 %>% 
   select(-player_api_id,-player_name,-player_fifa_api_id,-birthday,-Column,-match_date,-defensive_work_rate,-attacking_work_rate,-date,-preferred_foot) %>% 
   gather(key="Metric",value="Value",-id,-homeOrAway) %>% 
@@ -106,9 +133,11 @@ We can then join this up with the match data
 
 ```{r join}
 matches2<-select(matches1,id,home_team_api_id,away_team_api_id,result)
-joinedData<-left_join(matches2,players_grouped_2)
+joinedData<-left_join(matches2,players_grouped_2,by="id")
 
 ```
+
+##Predicting results
 
 ```{r ramndomForest}
 #getting two thirds of the data
@@ -122,16 +151,22 @@ resultsTrain<-select(trainData,result) %>%
 testDataMins<-select(testData,-result,-id)
 testResult<-select(testData,result) %>% 
   mutate("result"=as.factor(result))
-set.seed(100)
+
+set.seed(123)
+
 model<-randomForest(x = trainDataMinus,xtest =testDataMins ,ytest = testResult$result,y = resultsTrain$result)
 
 testResult$Predicted<-model$test$predicted
 
 testResult$Correct<-ifelse(testResult$result==testResult$Predicted,1,0)
 
-sum(testResult$Correct)
-
 sum(testResult$Correct)/nrow(testResult)
+```
+
+```{r summarising results}
+results<-testResult %>% 
+  group_by(Predicted,result) %>% 
+  summarise(Count=n())
 ```
 
 ```{r team attributes}
@@ -163,9 +198,63 @@ matchTeamAttr<-function(matchID,matchData,team_att=team_att){
     dat2<-full_join(homeStat,awayStat,by=names(homeStat))
     return(dat2)
 }
-aa<-matchTeamAttr(15014,matches3,team_att)
+#aa<-matchTeamAttr(15014,matches3,team_att)
 
 team_stats<-foreach(a = 1:nrow(matches3),.combine = "rbind",.errorhandling = "remove")%do%{
   matchTeamAttr(matches3[a,1],matches3,team_att)
 }
+
+match_team_stats<-matchData %>% 
+  gather(key="Col",value="team_api_id",-id,-date,-result) 
+match_team_stats_1<-team_stats %>% 
+  select(-date) %>% 
+  left_join(match_team_stats)
+matchTeam<-data.frame(str_split_fixed(match_team_stats_1$Col,"_",2),stringsAsFactors = F)
+
+match_team_stats_1$Col<-matchTeam$X1
+match_team_stats_1$Column<-paste(match_team_stats_1$Col,match_team_stats_1$Column,sep="_")
+
+#joining up with player data
+match_team_player_stats<-match_team_stats_1 %>% 
+  select(-Col,-date,-team_api_id) %>% 
+  spread(key="Column",value="Value",fill=0) %>% 
+  left_join(players_grouped_2)
+
+#forcing character strings to be vectors
+
+for(a in 1:ncol(match_team_player_stats)){
+  if(is.na(sum(as.numeric(match_team_player_stats[,a])))){
+    match_team_player_stats[,a]<-as.factor(match_team_player_stats[,a])
+  }else{
+    match_team_player_stats[,a]<-as.numeric(match_team_player_stats[,a])
+  }
+}
+```
+
+We can then check this with a model, and see if out predictions have improved
+
+```{r model with team data}
+rows<-sample(nrow(match_team_player_stats),nrow(match_team_player_stats)*2/3)
+
+trainData1<-match_team_player_stats[rows,]
+testData1<-match_team_player_stats[-rows,]
+
+trainData1M<-select(trainData1,-result,-id)
+testData1M<-select(testData1,-result,-id)
+
+set.seed(100)
+model1<-randomForest(x = trainData1M,xtest =testData1M ,ytest = testData1$result,y = trainData1$result)
+```
+
+Testing results
+
+```{r model 1 test}
+
+testResult1<-data.frame("Actual"=testData1$result,"Predicted"=model1$test$predicted,stringsAsFactors = F)
+
+testResult1$Correct<-ifelse(testResult1$Actual==testResult1$Predicted,1,0)
+
+sum(testResult1$Correct)
+
+sum(testResult1$Correct)/nrow(testResult1)
 ```
