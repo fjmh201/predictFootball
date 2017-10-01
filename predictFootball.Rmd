@@ -220,7 +220,7 @@ matchTeamAttr<-function(matchID,matchData,team_att=team_att){
 }
 #aa<-matchTeamAttr(15014,matches3,team_att)
 
-team_stats<-foreach(a = 1:nrow(matches3),.combine = "rbind",.errorhandling = "remove")%do%{
+team_stats<-foreach(a = 1:nrow(matches3),.combine = "rbind",.errorhandling = "remove",.packages = c("dplyr"),.export = c("matches3","team_att"))%dopar%{
   matchTeamAttr(matches3[a,1],matches3,team_att)
 }
 
@@ -244,6 +244,13 @@ team_stats_1<-match_team_stats_1 %>%
   spread(key="Column",value="Value",fill=0) %>% 
   mutate("result"=as.factor(result))
 
+for(i in 1:ncol(team_stats_1)){
+  if(any(is.na(as.numeric(team_stats_1[,i])))){
+    team_stats_1[,i]<-as.factor(team_stats_1[,i])
+  }else{
+    team_stats_1[,i]<-as.numeric(team_stats_1[,i])
+  }
+}
 numbers<-sample(nrow(team_stats_1),nrow(team_stats_1)*2/3)
 train_team_data<-team_stats_1[numbers,]
 
