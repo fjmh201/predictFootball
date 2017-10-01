@@ -5,7 +5,7 @@ output: html_document
 TODO: add in team attributes to model data
 
 
-```{r setup}
+```{r setup, warning=FALSE,message=FALSE}
 library(plyr)
 library(dplyr)
 library(tidyr)
@@ -169,6 +169,17 @@ results<-testResult %>%
   summarise(Count=n())
 
 formattable(results)
+```
+##Looking at the best predictors
+
+```{r predictors}
+predictors<-model$importance %>% data.frame()
+predictors$Predictor<-row.names(predictors)
+predictors<-arrange(predictors,desc(MeanDecreaseGini))
+
+formattable(head(predictors,10))
+
+formattable(tail(predictors,10))
 ```
 
 ##Adding in team data
